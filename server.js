@@ -12,6 +12,12 @@ const DATA_FILE = path.join(DATA_DIR, 'accounts.json');
 
 if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
 
+// Startup diagnostics — check Railway logs to verify this path is /data
+console.log(`[startup] DATA_DIR  = ${DATA_DIR}`);
+console.log(`[startup] DATA_FILE = ${DATA_FILE}`);
+console.log(`[startup] DATA_DIR exists: ${fs.existsSync(DATA_DIR)}`);
+console.log(`[startup] DATA_FILE exists: ${fs.existsSync(DATA_FILE)}`);
+
 // ---------------------------------------------------------------------------
 // Persistent account data
 // ---------------------------------------------------------------------------
@@ -449,6 +455,24 @@ wss.on('connection', (ws) => {
             case 'get_public_lobbies':  handleGetPublicLobbies(ws);              break;
             case 'start_countdown':     handleStartCountdown(ws, player);        break;
             case 'cancel_countdown':    handleCancelCountdown(ws, player);       break;
+
+            // In-game relay — forwards data to all other players in the same lobby
+            case 'game_relay': {
+                const lobby = lobbies.get(player.lobby_id);
+                if (lobby) {
+                    lobby.players.forEach(u => {
+                        if (u !== player.username) {
+                            const tw = byName.get(u);
+                            if (tw) send(tw, 'game_relay', { from: player.username, data: msg.data });
+                        }
+                    });
+                }
+                break;
+            }
+            // Ping echo — bounced straight back to measure relay latency
+            case 'game_ping':
+                send(ws, 'game_pong', { time: msg.time });
+                break;
             case 'webrtc_offer':
             case 'webrtc_answer':
             case 'webrtc_ice': {

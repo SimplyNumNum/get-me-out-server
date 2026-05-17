@@ -5,10 +5,12 @@ const fs        = require('fs');
 const path      = require('path');
 
 const PORT      = process.env.PORT || 8765;
-const DATA_DIR  = path.join(__dirname, 'data');
+// DATA_DIR can be overridden by an env var so a persistent volume survives deployments.
+// On Railway: set DATA_DIR=/data and mount a Volume at /data.
+const DATA_DIR  = process.env.DATA_DIR || path.join(__dirname, 'data');
 const DATA_FILE = path.join(DATA_DIR, 'accounts.json');
 
-if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR);
+if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
 
 // ---------------------------------------------------------------------------
 // Persistent account data

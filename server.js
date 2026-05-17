@@ -42,9 +42,10 @@ let accounts = loadAccounts();
 // Runtime state (lives only while server is running)
 // ---------------------------------------------------------------------------
 
-const clients = new Map(); // ws → { username, x, y, lobby_id }
-const byName  = new Map(); // username → ws
-const lobbies = new Map(); // lobby_id → lobby object
+const clients    = new Map(); // ws → { username, x, y, lobby_id, skin }
+const byName     = new Map(); // username → ws
+const lobbies    = new Map(); // lobby_id → lobby object
+const countdowns = new Map(); // lobby_id → { interval, remaining }
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -91,9 +92,20 @@ function lobbySummary(lobby) {
     };
 }
 
+function cancelCountdown(lobby_id, notify = true) {
+    const cd = countdowns.get(lobby_id);
+    if (!cd) return;
+    clearInterval(cd.interval);
+    countdowns.delete(lobby_id);
+    if (notify) notifyLobby(lobby_id, 'countdown_cancelled', {});
+}
+
 function leaveLobby(player, ws) {
     const lobby = lobbies.get(player.lobby_id);
     if (!lobby) { player.lobby_id = null; return; }
+
+    // Cancel any countdown if the host leaves or lobby empties
+    cancelCountdown(lobby.id, true);
 
     lobby.players = lobby.players.filter(u => u !== player.username);
     player.lobby_id = null;
@@ -108,6 +120,36 @@ function leaveLobby(player, ws) {
         notifyLobby(lobby.id, 'lobby_updated', { lobby: lobbySummary(lobby) });
     }
     send(ws, 'lobby_left', {});
+}
+
+function handleStartCountdown(ws, player) {
+    if (!player.lobby_id) return;
+    const lobby = lobbies.get(player.lobby_id);
+    if (!lobby || lobby.host !== player.username) return;
+    if (countdowns.has(lobby.id)) return; // already running
+
+    let remaining = 10;
+    notifyLobby(lobby.id, 'countdown_started', { seconds: remaining });
+
+    const interval = setInterval(() => {
+        remaining--;
+        if (remaining <= 0) {
+            cancelCountdown(lobby.id, false); // don't notify cancel
+            // Ordered player list: index 0 = host (peer id 1), etc.
+            notifyLobby(lobby.id, 'game_start', { players: [...lobby.players] });
+        } else {
+            notifyLobby(lobby.id, 'countdown_tick', { seconds: remaining });
+        }
+    }, 1000);
+
+    countdowns.set(lobby.id, { interval });
+}
+
+function handleCancelCountdown(ws, player) {
+    if (!player.lobby_id) return;
+    const lobby = lobbies.get(player.lobby_id);
+    if (!lobby || lobby.host !== player.username) return;
+    cancelCountdown(lobby.id, true);
 }
 
 // ---------------------------------------------------------------------------
@@ -404,7 +446,9 @@ wss.on('connection', (ws) => {
             case 'join_lobby':        handleJoinLobby(ws, msg, player);     break;
             case 'leave_lobby':       if (player.lobby_id) leaveLobby(player, ws); break;
             case 'lobby_invite':      handleLobbyInvite(ws, msg, player);   break;
-            case 'get_public_lobbies': handleGetPublicLobbies(ws);           break;
+            case 'get_public_lobbies':  handleGetPublicLobbies(ws);              break;
+            case 'start_countdown':     handleStartCountdown(ws, player);        break;
+            case 'cancel_countdown':    handleCancelCountdown(ws, player);       break;
             case 'webrtc_offer':
             case 'webrtc_answer':
             case 'webrtc_ice': {

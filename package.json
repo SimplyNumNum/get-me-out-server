@@ -1,0 +1,14 @@
+{
+  "name": "get-me-out-relay-server",
+  "version": "1.0.0",
+  "description": "Relay server for Get Me Out! FNAF coop roguelike",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node --watch server.js"
+  },
+  "dependencies": {
+    "bcryptjs": "^2.4.3",
+    "ws": "^8.18.0"
+  }
+}

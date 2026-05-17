@@ -119,13 +119,13 @@ function completeLogin(ws, username, token) {
     }
 
     const acc = accounts[username];
-    const player = { username, x: 400, y: 300, lobby_id: null };
+    const player = { username, x: 400, y: 300, lobby_id: null, skin: 'default' };
     clients.set(ws, player);
     byName.set(username, ws);
 
     const hubPlayers = [];
     clients.forEach((p, w) => {
-        if (w !== ws && !p.lobby_id) hubPlayers.push({ username: p.username, x: p.x, y: p.y });
+        if (w !== ws && !p.lobby_id) hubPlayers.push({ username: p.username, x: p.x, y: p.y, skin: p.skin || 'default' });
     });
 
     send(ws, 'registered', {
@@ -137,7 +137,7 @@ function completeLogin(ws, username, token) {
         hubPlayers,
     });
 
-    broadcastHub('player_joined_hub', { username, x: player.x, y: player.y }, ws);
+    broadcastHub('player_joined_hub', { username, x: player.x, y: player.y, skin: player.skin }, ws);
 
     acc.friends.forEach(f => {
         const fw = byName.get(f);
@@ -234,6 +234,13 @@ function handleHubMove(ws, msg, player) {
     player.x = msg.x;
     player.y = msg.y;
     broadcastHub('player_moved', { username: player.username, x: msg.x, y: msg.y }, ws);
+}
+
+function handleSetSkin(ws, msg, player) {
+    // Accept any short alphanumeric skin id
+    const skin = (typeof msg.skin === 'string' && msg.skin.length <= 32) ? msg.skin : 'default';
+    player.skin = skin;
+    broadcastHub('player_skin_changed', { username: player.username, skin }, ws);
 }
 
 function handleFriendRequest(ws, msg, player) {
@@ -386,6 +393,7 @@ wss.on('connection', (ws) => {
         // All other messages require being logged in
         switch (msg.type) {
             case 'hub_move':          handleHubMove(ws, msg, player);     break;
+            case 'set_skin':          handleSetSkin(ws, msg, player);     break;
             case 'friend_request':    handleFriendRequest(ws, msg, player); break;
             case 'friend_accept':     handleFriendAccept(ws, msg, player);  break;
             case 'friend_decline':    handleFriendDecline(ws, msg, player); break;

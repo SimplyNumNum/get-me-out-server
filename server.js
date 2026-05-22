@@ -4,6 +4,76 @@ const crypto    = require('crypto');
 const fs        = require('fs');
 const path      = require('path');
 
+// ---------------------------------------------------------------------------
+// Game data — mirrors the GDScript constants so the server can validate/roll
+// ---------------------------------------------------------------------------
+
+const SKIN_PACKS = {
+    animatronics: { skins: [
+        { id: 'ghost',     rarity: 'common' },
+        { id: 'bear',      rarity: 'common' },
+        { id: 'dino',      rarity: 'uncommon' },
+        { id: 'speder',    rarity: 'rare' },
+        { id: 'the_brain', rarity: 'epic' },
+        { id: 'mimqu',     rarity: 'legendary' },
+    ]},
+    fantasy: { skins: [
+        { id: 'knightskin', rarity: 'common' },
+        { id: 'wizard',     rarity: 'common' },
+        { id: 'rouge',      rarity: 'uncommon' },
+        { id: 'preist',     rarity: 'rare' },
+        { id: 'cultist',    rarity: 'epic' },
+        { id: 'raveger',    rarity: 'legendary' },
+    ]},
+};
+
+const RARITY_POOL   = { common: 60, uncommon: 25, rare: 10, epic: 4, legendary: 1 };
+const RARITY_REFUND = { common: 2,  uncommon: 5,  rare: 7,  epic: 10, legendary: 14 };
+const ROLL_COST     = { 1: 10, 10: 75 };
+
+// Skins that are unlocked via achievement rewards (not pack rolls)
+const ACHIEVEMENT_SKINS = new Set(['banana']);
+// Owner-only skins: skin_id → required username
+const OWNER_SKINS = { numnun: 'SimplyNumNum' };
+
+// Achievement rewards — validated server-side
+const ACHIEVEMENT_REWARDS = {
+    survive_night_5:  { sparks: 5,  skins: ['banana'] },
+    survive_night_10: { sparks: 10, tools: ['hacker'] },
+};
+
+// All valid pack skin ids (computed once)
+const ALL_PACK_SKINS = new Set(
+    Object.values(SKIN_PACKS).flatMap(p => p.skins.map(s => s.id))
+);
+
+function weightedRoll(pack_id) {
+    const pack = SKIN_PACKS[pack_id];
+    if (!pack) return null;
+    const perRarity = {};
+    pack.skins.forEach(s => perRarity[s.rarity] = (perRarity[s.rarity] || 0) + 1);
+    const roll = Math.floor(Math.random() * 100) + 1;
+    let cum = 0;
+    for (const s of pack.skins) {
+        cum += Math.floor(RARITY_POOL[s.rarity] / perRarity[s.rarity]);
+        if (roll <= cum) return s;
+    }
+    return pack.skins[pack.skins.length - 1];
+}
+
+// Return the player_data block to embed in 'registered'
+function playerDataBlock(acc) {
+    return {
+        sparks:                acc.sparks               ?? 0,
+        unlocked_skins:        acc.unlocked_skins        ?? [],
+        unlocked_tools:        acc.unlocked_tools        ?? [],
+        equipped_tools:        acc.equipped_tools        ?? [],
+        unlocked_achievements: acc.unlocked_achievements ?? [],
+        current_skin:          acc.current_skin          ?? 'default',
+        current_class:         acc.current_class         ?? 'night_guard',
+    };
+}
+
 const PORT      = process.env.PORT || 8765;
 // DATA_DIR can be overridden by an env var so a persistent volume survives deployments.
 // On Railway: set DATA_DIR=/data and mount a Volume at /data.
@@ -180,11 +250,12 @@ function completeLogin(ws, username, token) {
 
     send(ws, 'registered', {
         username,
-        token,                                                  // client saves this for auto-login
+        token,
         friends:       acc.friends,
         pendingIn:     acc.pendingIn,
         onlineFriends: acc.friends.filter(f => byName.has(f)),
         hubPlayers,
+        player_data:   playerDataBlock(acc),
     });
 
     broadcastHub('player_joined_hub', { username, x: player.x, y: player.y, skin: player.skin }, ws);
@@ -222,11 +293,18 @@ async function handleRegister(ws, msg) {
         const token = generateToken();
         accounts[username] = {
             passwordHash,
-            tokens:       [token],
-            friends:      [],
-            pendingIn:    [],
-            pendingOut:   [],
-            achievements: [],
+            tokens:                [token],
+            friends:               [],
+            pendingIn:             [],
+            pendingOut:            [],
+            // Server-authoritative player progression
+            sparks:                0,
+            unlocked_skins:        [],
+            unlocked_tools:        [],
+            equipped_tools:        [],
+            unlocked_achievements: [],
+            current_skin:          'default',
+            current_class:         'night_guard',
         };
         saveAccounts();
         completeLogin(ws, username, token);
@@ -287,10 +365,201 @@ function handleHubMove(ws, msg, player) {
 }
 
 function handleSetSkin(ws, msg, player) {
-    // Accept any short alphanumeric skin id
     const skin = (typeof msg.skin === 'string' && msg.skin.length <= 32) ? msg.skin : 'default';
+    const acc = accounts[player.username];
+
+    // Validate ownership
+    if (OWNER_SKINS[skin] && OWNER_SKINS[skin] !== player.username) return;
+    if (ALL_PACK_SKINS.has(skin) || ACHIEVEMENT_SKINS.has(skin)) {
+        if (!(acc.unlocked_skins ?? []).includes(skin)) return;
+    }
+
+    acc.current_skin = skin;
     player.skin = skin;
+    saveAccounts();
     broadcastHub('player_skin_changed', { username: player.username, skin }, ws);
+}
+
+// ---------------------------------------------------------------------------
+// Player progression handlers
+// ---------------------------------------------------------------------------
+
+function handleRollPack(ws, msg, player) {
+    const { pack_id, count } = msg;
+    if (!SKIN_PACKS[pack_id]) return;
+    if (!ROLL_COST[count]) return;
+
+    const cost = ROLL_COST[count];
+    const acc  = accounts[player.username];
+    if ((acc.sparks ?? 0) < cost) {
+        send(ws, 'error', { message: 'Not enough sparks.' });
+        return;
+    }
+
+    acc.sparks = (acc.sparks ?? 0) - cost;
+    if (!acc.unlocked_skins) acc.unlocked_skins = [];
+
+    const results       = [];
+    const newly_unlocked = [];
+    let   refund_total  = 0;
+
+    for (let i = 0; i < count; i++) {
+        const entry = weightedRoll(pack_id);
+        const sid   = entry.id;
+        const already_owned = acc.unlocked_skins.includes(sid) || newly_unlocked.includes(sid);
+        if (already_owned) {
+            refund_total += RARITY_REFUND[entry.rarity] ?? 2;
+        } else {
+            acc.unlocked_skins.push(sid);
+            newly_unlocked.push(sid);
+        }
+        results.push(sid);
+    }
+
+    acc.sparks += refund_total;
+    saveAccounts();
+
+    send(ws, 'roll_result', {
+        results,
+        newly_unlocked,
+        refund_total,
+        new_sparks: acc.sparks,
+    });
+}
+
+// ---------------------------------------------------------------------------
+// Night-win rewards — single atomic call replaces grant_sparks + unlock_achievement
+// ---------------------------------------------------------------------------
+
+function sparksForNight(night) {
+    if (night <= 3)  return 0;
+    if (night <= 5)  return 1;
+    if (night <= 8)  return 2;
+    if (night === 9) return 3;
+    return 5; // night 10
+}
+
+function handleNightComplete(ws, msg, player) {
+    const night = Math.floor(Number(msg.night));
+    if (!Number.isFinite(night) || night < 1 || night > 10) {
+        console.warn(`[night_complete] REJECTED — invalid night=${msg.night} from ${player.username}`);
+        return;
+    }
+
+    const acc = accounts[player.username];
+    if (!acc.unlocked_achievements) acc.unlocked_achievements = [];
+    if (!acc.unlocked_skins)        acc.unlocked_skins        = [];
+    if (!acc.unlocked_tools)        acc.unlocked_tools        = [];
+
+    let sparks_earned = sparksForNight(night);
+    const achievements_earned = [];
+
+    // Night-completion sparks
+    acc.sparks = (acc.sparks ?? 0) + sparks_earned;
+
+    // Night 5 achievement
+    if (night >= 5 && !acc.unlocked_achievements.includes('survive_night_5')) {
+        const r = ACHIEVEMENT_REWARDS['survive_night_5'];
+        acc.unlocked_achievements.push('survive_night_5');
+        acc.sparks += (r.sparks ?? 0);
+        sparks_earned  += (r.sparks ?? 0);
+        (r.skins ?? []).forEach(s => { if (!acc.unlocked_skins.includes(s)) acc.unlocked_skins.push(s); });
+        achievements_earned.push('survive_night_5');
+    }
+
+    // Night 10 achievement
+    if (night >= 10 && !acc.unlocked_achievements.includes('survive_night_10')) {
+        const r = ACHIEVEMENT_REWARDS['survive_night_10'];
+        acc.unlocked_achievements.push('survive_night_10');
+        acc.sparks += (r.sparks ?? 0);
+        sparks_earned  += (r.sparks ?? 0);
+        (r.skins ?? []).forEach(s => { if (!acc.unlocked_skins.includes(s)) acc.unlocked_skins.push(s); });
+        (r.tools ?? []).forEach(t => { if (!acc.unlocked_tools.includes(t)) acc.unlocked_tools.push(t); });
+        achievements_earned.push('survive_night_10');
+    }
+
+    saveAccounts();
+    console.log(`[night_complete] ${player.username} night=${night} sparks_earned=${sparks_earned} achievements=[${achievements_earned}] total_sparks=${acc.sparks}`);
+
+    send(ws, 'night_complete_result', {
+        night,
+        sparks_earned,
+        achievements_earned,
+        player_data: playerDataBlock(acc),
+    });
+}
+
+function handleRequestPlayerData(ws, player) {
+    const acc = accounts[player.username];
+    console.log(`[sync] ${player.username} requested player data sync`);
+    send(ws, 'player_data_synced', { player_data: playerDataBlock(acc) });
+}
+
+function handleGrantSparks(ws, msg, player) {
+    const amount = Math.floor(Number(msg.amount));
+    if (!Number.isFinite(amount) || amount <= 0 || amount > 50) {
+        console.warn(`[grant_sparks] REJECTED for ${player.username} — amount=${msg.amount}`);
+        return;
+    }
+    const acc = accounts[player.username];
+    const before = acc.sparks ?? 0;
+    acc.sparks = before + amount;
+    saveAccounts();
+    console.log(`[grant_sparks] ${player.username}: ${before} + ${amount} = ${acc.sparks}`);
+    send(ws, 'sparks_updated', { new_sparks: acc.sparks });
+}
+
+function handleUnlockAchievement(ws, msg, player) {
+    const { ach_id } = msg;
+    const rewards = ACHIEVEMENT_REWARDS[ach_id];
+    if (!rewards) {
+        console.warn(`[achievement] UNKNOWN ach_id="${ach_id}" from ${player.username}`);
+        return;
+    }
+
+    const acc = accounts[player.username];
+    if (!acc.unlocked_achievements) acc.unlocked_achievements = [];
+    if (acc.unlocked_achievements.includes(ach_id)) {
+        console.log(`[achievement] ${player.username} already has "${ach_id}" — skipping`);
+        return;
+    }
+
+    acc.unlocked_achievements.push(ach_id);
+    if (rewards.sparks) acc.sparks = (acc.sparks ?? 0) + rewards.sparks;
+    if (rewards.skins)  rewards.skins.forEach(s => {
+        if (!acc.unlocked_skins) acc.unlocked_skins = [];
+        if (!acc.unlocked_skins.includes(s)) acc.unlocked_skins.push(s);
+    });
+    if (rewards.tools)  rewards.tools.forEach(t => {
+        if (!acc.unlocked_tools) acc.unlocked_tools = [];
+        if (!acc.unlocked_tools.includes(t)) acc.unlocked_tools.push(t);
+    });
+    saveAccounts();
+    console.log(`[achievement] ${player.username} unlocked "${ach_id}" → sparks=${acc.sparks}, skins=[${acc.unlocked_skins}]`);
+
+    send(ws, 'achievement_unlocked', {
+        ach_id,
+        new_sparks:     acc.sparks,
+        unlocked_skins: acc.unlocked_skins,
+        unlocked_tools: acc.unlocked_tools,
+    });
+}
+
+function handleSetEquippedTools(ws, msg, player) {
+    const { tools } = msg;
+    if (!Array.isArray(tools)) return;
+    const acc   = accounts[player.username];
+    const valid = tools.filter(t => (acc.unlocked_tools ?? []).includes(t)).slice(0, 3);
+    acc.equipped_tools = valid;
+    saveAccounts();
+}
+
+function handleSetClass(ws, msg, player) {
+    const valid_classes = new Set(['night_guard']);
+    if (!valid_classes.has(msg.class_id)) return;
+    const acc = accounts[player.username];
+    acc.current_class = msg.class_id;
+    saveAccounts();
 }
 
 function handleFriendRequest(ws, msg, player) {
@@ -442,8 +711,15 @@ wss.on('connection', (ws) => {
 
         // All other messages require being logged in
         switch (msg.type) {
-            case 'hub_move':          handleHubMove(ws, msg, player);     break;
-            case 'set_skin':          handleSetSkin(ws, msg, player);     break;
+            case 'hub_move':             handleHubMove(ws, msg, player);            break;
+            case 'set_skin':             handleSetSkin(ws, msg, player);            break;
+            case 'night_complete':       handleNightComplete(ws, msg, player);      break;
+            case 'request_player_data':  handleRequestPlayerData(ws, player);       break;
+            case 'roll_pack':            handleRollPack(ws, msg, player);           break;
+            case 'grant_sparks':         handleGrantSparks(ws, msg, player);        break;
+            case 'unlock_achievement':   handleUnlockAchievement(ws, msg, player);  break;
+            case 'set_equipped_tools':   handleSetEquippedTools(ws, msg, player);   break;
+            case 'set_class':            handleSetClass(ws, msg, player);           break;
             case 'friend_request':    handleFriendRequest(ws, msg, player); break;
             case 'friend_accept':     handleFriendAccept(ws, msg, player);  break;
             case 'friend_decline':    handleFriendDecline(ws, msg, player); break;
@@ -469,6 +745,10 @@ wss.on('connection', (ws) => {
                 }
                 break;
             }
+            // Keepalive ping — keeps the WebSocket alive during idle gameplay
+            case 'ping':
+                send(ws, 'pong', {});
+                break;
             // Ping echo — bounced straight back to measure relay latency
             case 'game_ping':
                 send(ws, 'game_pong', { time: msg.time });

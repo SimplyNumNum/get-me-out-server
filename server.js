@@ -220,6 +220,26 @@ function leaveLobby(player, ws) {
         notifyLobby(lobby.id, 'lobby_updated', { lobby: lobbySummary(lobby) });
     }
     send(ws, 'lobby_left', {});
+
+    // Re-enter the hub: tell all current hub players this player is back,
+    // and tell this player who is already in the hub (so their scene can spawn them).
+    const acc = accounts[player.username] || {};
+    broadcastHub('player_joined_hub', {
+        username: player.username,
+        x: player.x, y: player.y,
+        skin: player.skin || 'default',
+        level: acc.level ?? 1,
+        current_class: acc.current_class ?? 'night_guard',
+    }, ws);
+
+    const hubPlayers = [];
+    clients.forEach((p, w) => {
+        if (w !== ws && !p.lobby_id) {
+            const pa = accounts[p.username] || {};
+            hubPlayers.push({ username: p.username, x: p.x, y: p.y, skin: p.skin || 'default', level: pa.level ?? 1, current_class: pa.current_class ?? 'night_guard' });
+        }
+    });
+    send(ws, 'hub_state', { hubPlayers });
 }
 
 function handleStartCountdown(ws, player) {

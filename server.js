@@ -61,8 +61,29 @@ function weightedRoll(pack_id) {
     return pack.skins[pack.skins.length - 1];
 }
 
+// ---------------------------------------------------------------------------
+// Level / XP system
+// ---------------------------------------------------------------------------
+
+// XP needed to advance FROM level n (e.g. 100 xp to go from Lv1 → Lv2).
+function xpForLevel(n) {
+    return 100 * (n || 1);
+}
+
+// Add XP to an account, levelling up as needed.
+function applyXP(acc, amount) {
+    if (!acc.level) acc.level = 1;
+    if (!acc.xp)    acc.xp   = 0;
+    acc.xp += amount;
+    while (acc.xp >= xpForLevel(acc.level)) {
+        acc.xp    -= xpForLevel(acc.level);
+        acc.level += 1;
+    }
+}
+
 // Return the player_data block to embed in 'registered'
 function playerDataBlock(acc) {
+    const lv = acc.level ?? 1;
     return {
         sparks:                acc.sparks               ?? 0,
         unlocked_skins:        acc.unlocked_skins        ?? [],
@@ -71,6 +92,9 @@ function playerDataBlock(acc) {
         unlocked_achievements: acc.unlocked_achievements ?? [],
         current_skin:          acc.current_skin          ?? 'default',
         current_class:         acc.current_class         ?? 'night_guard',
+        level:                 lv,
+        xp:                    acc.xp                    ?? 0,
+        xp_needed:             xpForLevel(lv),
     };
 }
 
@@ -245,7 +269,10 @@ function completeLogin(ws, username, token) {
 
     const hubPlayers = [];
     clients.forEach((p, w) => {
-        if (w !== ws && !p.lobby_id) hubPlayers.push({ username: p.username, x: p.x, y: p.y, skin: p.skin || 'default' });
+        if (w !== ws && !p.lobby_id) {
+            const pa = accounts[p.username] || {};
+            hubPlayers.push({ username: p.username, x: p.x, y: p.y, skin: p.skin || 'default', level: pa.level ?? 1, current_class: pa.current_class ?? 'night_guard' });
+        }
     });
 
     send(ws, 'registered', {
@@ -258,7 +285,7 @@ function completeLogin(ws, username, token) {
         player_data:   playerDataBlock(acc),
     });
 
-    broadcastHub('player_joined_hub', { username, x: player.x, y: player.y, skin: player.skin }, ws);
+    broadcastHub('player_joined_hub', { username, x: player.x, y: player.y, skin: player.skin, level: acc.level ?? 1, current_class: acc.current_class ?? 'night_guard' }, ws);
 
     acc.friends.forEach(f => {
         const fw = byName.get(f);
@@ -457,6 +484,9 @@ function handleNightComplete(ws, msg, player) {
     // Night-completion sparks
     acc.sparks = (acc.sparks ?? 0) + sparks_earned;
 
+    // Night-completion XP (night × 10)
+    applyXP(acc, night * 10);
+
     // Night 5 achievement
     if (night >= 5 && !acc.unlocked_achievements.includes('survive_night_5')) {
         const r = ACHIEVEMENT_REWARDS['survive_night_5'];
@@ -534,8 +564,10 @@ function handleUnlockAchievement(ws, msg, player) {
         if (!acc.unlocked_tools) acc.unlocked_tools = [];
         if (!acc.unlocked_tools.includes(t)) acc.unlocked_tools.push(t);
     });
+    // Achievement XP bonus: 25 XP per achievement
+    applyXP(acc, 25);
     saveAccounts();
-    console.log(`[achievement] ${player.username} unlocked "${ach_id}" → sparks=${acc.sparks}, skins=[${acc.unlocked_skins}]`);
+    console.log(`[achievement] ${player.username} unlocked "${ach_id}" → sparks=${acc.sparks}, skins=[${acc.unlocked_skins}], level=${acc.level}`);
 
     send(ws, 'achievement_unlocked', {
         ach_id,

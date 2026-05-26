@@ -411,6 +411,13 @@ function handleHubMove(ws, msg, player) {
     broadcastHub('player_moved', { username: player.username, x: msg.x, y: msg.y }, ws);
 }
 
+function handleHubEmote(ws, msg, player) {
+    if (player.lobby_id) return;  // only broadcast when in the hub
+    const emote = (typeof msg.emote === 'string' && msg.emote.length <= 32) ? msg.emote : '';
+    if (!emote) return;
+    broadcastHub('hub_emote', { username: player.username, emote }, ws);
+}
+
 function handleSetSkin(ws, msg, player) {
     const skin = (typeof msg.skin === 'string' && msg.skin.length <= 32) ? msg.skin : 'default';
     const acc = accounts[player.username];
@@ -764,6 +771,7 @@ wss.on('connection', (ws) => {
         // All other messages require being logged in
         switch (msg.type) {
             case 'hub_move':             handleHubMove(ws, msg, player);            break;
+            case 'hub_emote':            handleHubEmote(ws, msg, player);           break;
             case 'set_skin':             handleSetSkin(ws, msg, player);            break;
             case 'night_complete':       handleNightComplete(ws, msg, player);      break;
             case 'request_player_data':  handleRequestPlayerData(ws, player);       break;

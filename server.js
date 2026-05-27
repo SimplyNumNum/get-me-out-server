@@ -61,11 +61,24 @@ const ACHIEVEMENT_SKINS = new Set(['banana']);
 const OWNER_SKINS = { numnun: 'SimplyNumNum' };
 
 // Achievement rewards — validated server-side
+// xp: how much XP to grant (defaults to 25 if omitted)
 const ACHIEVEMENT_REWARDS = {
-    complete_tutorial: { sparks: 10 },   // 10 sparks + 25 XP (XP applied automatically for all achievements)
-    survive_night_5:  { sparks: 5,  skins: ['banana'] },
-    survive_night_10: { sparks: 10, tools: ['hacker'] },
+    complete_tutorial:             { sparks: 10,  xp: 25  },
+    survive_night_5:               { sparks: 5,   xp: 25,  skins: ['banana'] },
+    survive_night_10:              { sparks: 10,  xp: 25,  tools: ['hacker'] },
+    // Collector achievements
+    collect_all_tools:             { sparks: 40,  xp: 100 },
+    collect_all_classes:           { sparks: 40,  xp: 100 },
+    collect_all_animatronics_skins:{ sparks: 40,  xp: 100 },
+    collect_all_fantasy_skins:     { sparks: 40,  xp: 100 },
+    // Challenge achievements
+    hard_mode:                     { sparks: 15,  xp: 50  },
+    // Special achievements
+    meet_numnun:                   { sparks: 0,   xp: 25  },
 };
+
+// Hard animatronics (difficulty 3) — all must be present for Hard Mode achievement
+const HARD_ANIMATRONICS = ['knight', 'd33r', 'wingzel'];
 
 // All valid pack skin ids (computed once)
 const ALL_PACK_SKINS = new Set(
@@ -130,6 +143,62 @@ function applyXP(acc, amount) {
         acc.xp    -= xpForLevel(acc.level);
         acc.level += 1;
     }
+}
+
+// Award a single achievement to an account, send the result to ws (may be null).
+// Returns true if newly awarded, false if already had it or unknown.
+function awardAchievement(acc, ach_id, ws) {
+    const rewards = ACHIEVEMENT_REWARDS[ach_id];
+    if (!rewards) return false;
+    if (!acc.unlocked_achievements) acc.unlocked_achievements = [];
+    if (acc.unlocked_achievements.includes(ach_id)) return false;
+
+    acc.unlocked_achievements.push(ach_id);
+    if (rewards.sparks) acc.sparks = (acc.sparks ?? 0) + rewards.sparks;
+    if (rewards.skins)  rewards.skins.forEach(s => {
+        if (!acc.unlocked_skins) acc.unlocked_skins = [];
+        if (!acc.unlocked_skins.includes(s)) acc.unlocked_skins.push(s);
+    });
+    if (rewards.tools)  rewards.tools.forEach(t => {
+        if (!acc.unlocked_tools) acc.unlocked_tools = [];
+        if (!acc.unlocked_tools.includes(t)) acc.unlocked_tools.push(t);
+    });
+    applyXP(acc, rewards.xp ?? 25);
+
+    if (ws) {
+        send(ws, 'achievement_unlocked', {
+            ach_id,
+            new_sparks:     acc.sparks,
+            unlocked_skins: acc.unlocked_skins ?? [],
+            unlocked_tools: acc.unlocked_tools ?? [],
+        });
+    }
+    console.log(`[achievement] ${acc.username ?? '?'} unlocked "${ach_id}"`);
+    return true;
+}
+
+// Check and award all collector achievements for an account after a roll.
+function checkCollectorAchievements(acc, ws) {
+    let anyAwarded = false;
+
+    const allToolIds    = TOOL_PACKS.tools.items.map(t => t.id);
+    const allClassIds   = CLASS_PACKS.classes.items.map(c => c.id);
+    const allAnimIds    = SKIN_PACKS.animatronics.skins.map(s => s.id);
+    const allFantasyIds = SKIN_PACKS.fantasy.skins.map(s => s.id);
+
+    if (allToolIds.every(id => (acc.unlocked_tools ?? []).includes(id)))
+        if (awardAchievement(acc, 'collect_all_tools', ws)) anyAwarded = true;
+
+    if (allClassIds.every(id => (acc.unlocked_classes ?? []).includes(id)))
+        if (awardAchievement(acc, 'collect_all_classes', ws)) anyAwarded = true;
+
+    if (allAnimIds.every(id => (acc.unlocked_skins ?? []).includes(id)))
+        if (awardAchievement(acc, 'collect_all_animatronics_skins', ws)) anyAwarded = true;
+
+    if (allFantasyIds.every(id => (acc.unlocked_skins ?? []).includes(id)))
+        if (awardAchievement(acc, 'collect_all_fantasy_skins', ws)) anyAwarded = true;
+
+    if (anyAwarded) saveAccounts();
 }
 
 // Return the player_data block to embed in 'registered'
@@ -588,6 +657,9 @@ function handleRollPack(ws, msg, player) {
     acc.sparks += refund_total;
     saveAccounts();
 
+    // Check if any collector achievements were just completed by this roll
+    checkCollectorAchievements(acc, ws);
+
     const result_type = is_tool_roll ? 'tool' : (is_class_roll ? 'class' : 'skin');
     send(ws, 'roll_result', {
         results,
@@ -638,6 +710,7 @@ function handleNightComplete(ws, msg, player) {
         acc.sparks += (r.sparks ?? 0);
         sparks_earned  += (r.sparks ?? 0);
         (r.skins ?? []).forEach(s => { if (!acc.unlocked_skins.includes(s)) acc.unlocked_skins.push(s); });
+        applyXP(acc, r.xp ?? 25);
         achievements_earned.push('survive_night_5');
     }
 
@@ -649,7 +722,22 @@ function handleNightComplete(ws, msg, player) {
         sparks_earned  += (r.sparks ?? 0);
         (r.skins ?? []).forEach(s => { if (!acc.unlocked_skins.includes(s)) acc.unlocked_skins.push(s); });
         (r.tools ?? []).forEach(t => { if (!acc.unlocked_tools.includes(t)) acc.unlocked_tools.push(t); });
+        applyXP(acc, r.xp ?? 25);
         achievements_earned.push('survive_night_10');
+    }
+
+    // Hard Mode achievement — beat Night 10 with all difficulty-3 animatronics present
+    if (night >= 10 && !acc.unlocked_achievements.includes('hard_mode')) {
+        const sentAnimatronics = Array.isArray(msg.animatronics) ? msg.animatronics : [];
+        const hasAllHard = HARD_ANIMATRONICS.every(id => sentAnimatronics.includes(id));
+        if (hasAllHard) {
+            const r = ACHIEVEMENT_REWARDS['hard_mode'];
+            acc.unlocked_achievements.push('hard_mode');
+            acc.sparks += (r.sparks ?? 0);
+            sparks_earned  += (r.sparks ?? 0);
+            applyXP(acc, r.xp ?? 25);
+            achievements_earned.push('hard_mode');
+        }
     }
 
     saveAccounts();
@@ -708,8 +796,8 @@ function handleUnlockAchievement(ws, msg, player) {
         if (!acc.unlocked_tools) acc.unlocked_tools = [];
         if (!acc.unlocked_tools.includes(t)) acc.unlocked_tools.push(t);
     });
-    // Achievement XP bonus: 25 XP per achievement
-    applyXP(acc, 25);
+    // Achievement XP bonus — uses the rewards table (defaults to 25 if not specified)
+    applyXP(acc, rewards.xp ?? 25);
     saveAccounts();
     console.log(`[achievement] ${player.username} unlocked "${ach_id}" → sparks=${acc.sparks}, skins=[${acc.unlocked_skins}], level=${acc.level}`);
 
@@ -864,6 +952,24 @@ function handleJoinLobby(ws, msg, player) {
     player.lobby_id = lobby.id;
     send(ws, 'lobby_joined', { lobby: lobbySummary(lobby) });
     notifyLobby(lobby.id, 'lobby_updated', { lobby: lobbySummary(lobby) });
+
+    // --- Meet NumNum achievement ---
+    // Case 1: joining player is NOT SimplyNumNum but SimplyNumNum is already in the lobby
+    if (player.username !== 'SimplyNumNum' && lobby.players.includes('SimplyNumNum')) {
+        const acc = accounts[player.username];
+        if (awardAchievement(acc, 'meet_numnun', ws)) saveAccounts();
+    }
+    // Case 2: SimplyNumNum just joined — award all existing non-SimplyNumNum members
+    if (player.username === 'SimplyNumNum') {
+        let anyAwarded = false;
+        lobby.players.forEach(u => {
+            if (u === 'SimplyNumNum') return;
+            const macc = accounts[u];
+            const mws  = byName.get(u);
+            if (macc && awardAchievement(macc, 'meet_numnun', mws)) anyAwarded = true;
+        });
+        if (anyAwarded) saveAccounts();
+    }
 }
 
 function handleLobbyInvite(ws, msg, player) {

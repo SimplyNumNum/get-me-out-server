@@ -38,6 +38,7 @@ const OWNER_SKINS = { numnun: 'SimplyNumNum' };
 
 // Achievement rewards — validated server-side
 const ACHIEVEMENT_REWARDS = {
+    complete_tutorial: { sparks: 10 },   // 10 sparks + 25 XP (XP applied automatically for all achievements)
     survive_night_5:  { sparks: 5,  skins: ['banana'] },
     survive_night_10: { sparks: 10, tools: ['hacker'] },
 };

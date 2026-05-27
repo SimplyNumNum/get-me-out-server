@@ -38,10 +38,22 @@ const TOOL_PACKS = {
     ]},
 };
 
+const CLASS_PACKS = {
+    classes: { items: [
+        { id: 'janitor',        rarity: 'common' },
+        { id: 'electrician',    rarity: 'common' },
+        { id: 'runner',         rarity: 'uncommon' },
+        { id: 'reaching',       rarity: 'rare' },
+        { id: 'security_guard', rarity: 'epic' },
+        { id: 'sparks',         rarity: 'legendary' },
+    ]},
+};
+
 const RARITY_POOL      = { common: 60, uncommon: 25, rare: 10, epic: 4, legendary: 1 };
 const RARITY_REFUND    = { common: 2,  uncommon: 5,  rare: 7,  epic: 10, legendary: 14 };
-const ROLL_COST        = { 1: 10, 10: 75 };   // skin machine costs
-const TOOL_ROLL_COST   = { 1: 15, 10: 95 };   // tool machine costs
+const ROLL_COST        = { 1: 10, 10: 75 };    // skin machine costs
+const TOOL_ROLL_COST   = { 1: 15, 10: 95 };    // tool machine costs
+const CLASS_ROLL_COST  = { 1: 20, 10: 120 };   // class machine costs
 
 // Skins that are unlocked via achievement rewards (not pack rolls)
 const ACHIEVEMENT_SKINS = new Set(['banana']);
@@ -87,6 +99,19 @@ function weightedToolRoll() {
     return pack.items[pack.items.length - 1];
 }
 
+function weightedClassRoll() {
+    const pack = CLASS_PACKS.classes;
+    const perRarity = {};
+    pack.items.forEach(s => perRarity[s.rarity] = (perRarity[s.rarity] || 0) + 1);
+    const roll = Math.floor(Math.random() * 100) + 1;
+    let cum = 0;
+    for (const s of pack.items) {
+        cum += Math.floor(RARITY_POOL[s.rarity] / perRarity[s.rarity]);
+        if (roll <= cum) return s;
+    }
+    return pack.items[pack.items.length - 1];
+}
+
 // ---------------------------------------------------------------------------
 // Level / XP system
 // ---------------------------------------------------------------------------
@@ -114,6 +139,7 @@ function playerDataBlock(acc) {
         sparks:                acc.sparks               ?? 0,
         unlocked_skins:        acc.unlocked_skins        ?? [],
         unlocked_tools:        acc.unlocked_tools        ?? [],
+        unlocked_classes:      acc.unlocked_classes      ?? [],
         equipped_tools:        acc.equipped_tools        ?? [],
         unlocked_achievements: acc.unlocked_achievements ?? [],
         current_skin:          acc.current_skin          ?? 'default',
@@ -386,6 +412,7 @@ async function handleRegister(ws, msg) {
             sparks:                0,
             unlocked_skins:        [],
             unlocked_tools:        [],
+            unlocked_classes:      [],
             equipped_tools:        [],
             unlocked_achievements: [],
             current_skin:          'default',
@@ -486,9 +513,10 @@ function handleSetSkin(ws, msg, player) {
 
 function handleRollPack(ws, msg, player) {
     const { pack_id, count } = msg;
-    const is_tool_roll = (pack_id === 'tools');
-    if (!is_tool_roll && !SKIN_PACKS[pack_id]) return;
-    const cost_table = is_tool_roll ? TOOL_ROLL_COST : ROLL_COST;
+    const is_tool_roll  = (pack_id === 'tools');
+    const is_class_roll = (pack_id === 'classes');
+    if (!is_tool_roll && !is_class_roll && !SKIN_PACKS[pack_id]) return;
+    const cost_table = is_tool_roll ? TOOL_ROLL_COST : (is_class_roll ? CLASS_ROLL_COST : ROLL_COST);
     if (!cost_table[count]) return;
 
     const cost = cost_table[count];
@@ -519,6 +547,21 @@ function handleRollPack(ws, msg, player) {
             }
             results.push(tid);
         }
+    } else if (is_class_roll) {
+        // Class roll — adds to unlocked_classes
+        if (!acc.unlocked_classes) acc.unlocked_classes = [];
+        for (let i = 0; i < count; i++) {
+            const entry = weightedClassRoll();
+            const cid   = entry.id;
+            const already_owned = acc.unlocked_classes.includes(cid) || newly_unlocked.includes(cid);
+            if (already_owned) {
+                refund_total += RARITY_REFUND[entry.rarity] ?? 2;
+            } else {
+                acc.unlocked_classes.push(cid);
+                newly_unlocked.push(cid);
+            }
+            results.push(cid);
+        }
     } else {
         // Skin roll — adds to unlocked_skins
         if (!acc.unlocked_skins) acc.unlocked_skins = [];
@@ -539,12 +582,13 @@ function handleRollPack(ws, msg, player) {
     acc.sparks += refund_total;
     saveAccounts();
 
+    const result_type = is_tool_roll ? 'tool' : (is_class_roll ? 'class' : 'skin');
     send(ws, 'roll_result', {
         results,
         newly_unlocked,
         refund_total,
         new_sparks:  acc.sparks,
-        result_type: is_tool_roll ? 'tool' : 'skin',
+        result_type,
     });
 }
 
@@ -681,11 +725,17 @@ function handleSetEquippedTools(ws, msg, player) {
 }
 
 function handleSetClass(ws, msg, player) {
-    const valid_classes = new Set(['night_guard']);
-    if (!valid_classes.has(msg.class_id)) return;
+    const class_id = msg.class_id;
+    if (typeof class_id !== 'string') return;
     const acc = accounts[player.username];
-    acc.current_class = msg.class_id;
+    // night_guard is always valid; rollable classes must be unlocked
+    const ALL_CLASS_IDS = new Set(['night_guard', ...CLASS_PACKS.classes.items.map(c => c.id)]);
+    if (!ALL_CLASS_IDS.has(class_id)) return;
+    if (class_id !== 'night_guard' && !(acc.unlocked_classes ?? []).includes(class_id)) return;
+    acc.current_class = class_id;
     saveAccounts();
+    // Broadcast class change to hub so other players see updated label
+    broadcastHub('player_class_changed', { username: player.username, current_class: class_id });
 }
 
 function handleFriendRequest(ws, msg, player) {

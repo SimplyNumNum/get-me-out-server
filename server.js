@@ -730,17 +730,34 @@ function handleSetEquippedTools(ws, msg, player) {
     saveAccounts();
 }
 
+// Owner-only classes: class_id → required username
+const OWNER_CLASSES = { gamer: 'SimplyNumNum' };
+
 function handleSetClass(ws, msg, player) {
     const class_id = msg.class_id;
     if (typeof class_id !== 'string') return;
     const acc = accounts[player.username];
-    // night_guard is always valid; rollable classes must be unlocked
-    const ALL_CLASS_IDS = new Set(['night_guard', ...CLASS_PACKS.classes.items.map(c => c.id)]);
-    if (!ALL_CLASS_IDS.has(class_id)) return;
-    if (class_id !== 'night_guard' && !(acc.unlocked_classes ?? []).includes(class_id)) return;
+    // night_guard is always valid
+    if (class_id === 'night_guard') {
+        acc.current_class = class_id;
+        saveAccounts();
+        broadcastHub('player_class_changed', { username: player.username, current_class: class_id });
+        return;
+    }
+    // Owner-only classes: only the designated user can equip
+    if (OWNER_CLASSES[class_id]) {
+        if (OWNER_CLASSES[class_id] !== player.username) return;
+        acc.current_class = class_id;
+        saveAccounts();
+        broadcastHub('player_class_changed', { username: player.username, current_class: class_id });
+        return;
+    }
+    // Rollable classes must be in CLASS_PACKS and unlocked
+    const rollable_ids = new Set(CLASS_PACKS.classes.items.map(c => c.id));
+    if (!rollable_ids.has(class_id)) return;
+    if (!(acc.unlocked_classes ?? []).includes(class_id)) return;
     acc.current_class = class_id;
     saveAccounts();
-    // Broadcast class change to hub so other players see updated label
     broadcastHub('player_class_changed', { username: player.username, current_class: class_id });
 }
 

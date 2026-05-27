@@ -200,6 +200,12 @@ let accounts = loadAccounts();
         saveAccounts();
         console.log('[dev] Granted 250 sparks to SimplyNumNum (total: ' + acc.sparks + ')');
     }
+    if (acc && !acc._dev_spark_grant2) {
+        acc.sparks = (acc.sparks ?? 0) + 250;
+        acc._dev_spark_grant2 = true;
+        saveAccounts();
+        console.log('[dev] Granted 250 more sparks to SimplyNumNum (total: ' + acc.sparks + ')');
+    }
 })();
 
 // ---------------------------------------------------------------------------

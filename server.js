@@ -38,9 +38,10 @@ const TOOL_PACKS = {
     ]},
 };
 
-const RARITY_POOL   = { common: 60, uncommon: 25, rare: 10, epic: 4, legendary: 1 };
-const RARITY_REFUND = { common: 2,  uncommon: 5,  rare: 7,  epic: 10, legendary: 14 };
-const ROLL_COST     = { 1: 10, 10: 75 };
+const RARITY_POOL      = { common: 60, uncommon: 25, rare: 10, epic: 4, legendary: 1 };
+const RARITY_REFUND    = { common: 2,  uncommon: 5,  rare: 7,  epic: 10, legendary: 14 };
+const ROLL_COST        = { 1: 10, 10: 75 };   // skin machine costs
+const TOOL_ROLL_COST   = { 1: 15, 10: 95 };   // tool machine costs
 
 // Skins that are unlocked via achievement rewards (not pack rolls)
 const ACHIEVEMENT_SKINS = new Set(['banana']);
@@ -162,6 +163,18 @@ function saveAccounts() {
 }
 
 let accounts = loadAccounts();
+
+// One-time developer spark grant — gives SimplyNumNum 250 sparks for testing.
+// The _dev_spark_grant flag prevents it from re-running on subsequent restarts.
+(function grantDevSparks() {
+    const acc = accounts['SimplyNumNum'];
+    if (acc && !acc._dev_spark_grant) {
+        acc.sparks = (acc.sparks ?? 0) + 250;
+        acc._dev_spark_grant = true;
+        saveAccounts();
+        console.log('[dev] Granted 250 sparks to SimplyNumNum (total: ' + acc.sparks + ')');
+    }
+})();
 
 // ---------------------------------------------------------------------------
 // Runtime state (lives only while server is running)
@@ -475,9 +488,10 @@ function handleRollPack(ws, msg, player) {
     const { pack_id, count } = msg;
     const is_tool_roll = (pack_id === 'tools');
     if (!is_tool_roll && !SKIN_PACKS[pack_id]) return;
-    if (!ROLL_COST[count]) return;
+    const cost_table = is_tool_roll ? TOOL_ROLL_COST : ROLL_COST;
+    if (!cost_table[count]) return;
 
-    const cost = ROLL_COST[count];
+    const cost = cost_table[count];
     const acc  = accounts[player.username];
     if ((acc.sparks ?? 0) < cost) {
         send(ws, 'error', { message: 'Not enough sparks.' });

@@ -27,6 +27,17 @@ const SKIN_PACKS = {
     ]},
 };
 
+const TOOL_PACKS = {
+    tools: { items: [
+        { id: 'brighter_lights', rarity: 'common' },
+        { id: 'running_shoes',   rarity: 'common' },
+        { id: 'power_boost',     rarity: 'uncommon' },
+        { id: 'power_savor',     rarity: 'rare' },
+        { id: 'high_roller',     rarity: 'epic' },
+        { id: 'get_it_out',      rarity: 'legendary' },
+    ]},
+};
+
 const RARITY_POOL   = { common: 60, uncommon: 25, rare: 10, epic: 4, legendary: 1 };
 const RARITY_REFUND = { common: 2,  uncommon: 5,  rare: 7,  epic: 10, legendary: 14 };
 const ROLL_COST     = { 1: 10, 10: 75 };
@@ -60,6 +71,19 @@ function weightedRoll(pack_id) {
         if (roll <= cum) return s;
     }
     return pack.skins[pack.skins.length - 1];
+}
+
+function weightedToolRoll() {
+    const pack = TOOL_PACKS.tools;
+    const perRarity = {};
+    pack.items.forEach(s => perRarity[s.rarity] = (perRarity[s.rarity] || 0) + 1);
+    const roll = Math.floor(Math.random() * 100) + 1;
+    let cum = 0;
+    for (const s of pack.items) {
+        cum += Math.floor(RARITY_POOL[s.rarity] / perRarity[s.rarity]);
+        if (roll <= cum) return s;
+    }
+    return pack.items[pack.items.length - 1];
 }
 
 // ---------------------------------------------------------------------------
@@ -449,7 +473,8 @@ function handleSetSkin(ws, msg, player) {
 
 function handleRollPack(ws, msg, player) {
     const { pack_id, count } = msg;
-    if (!SKIN_PACKS[pack_id]) return;
+    const is_tool_roll = (pack_id === 'tools');
+    if (!is_tool_roll && !SKIN_PACKS[pack_id]) return;
     if (!ROLL_COST[count]) return;
 
     const cost = ROLL_COST[count];
@@ -460,23 +485,41 @@ function handleRollPack(ws, msg, player) {
     }
 
     acc.sparks = (acc.sparks ?? 0) - cost;
-    if (!acc.unlocked_skins) acc.unlocked_skins = [];
 
-    const results       = [];
+    const results        = [];
     const newly_unlocked = [];
-    let   refund_total  = 0;
+    let   refund_total   = 0;
 
-    for (let i = 0; i < count; i++) {
-        const entry = weightedRoll(pack_id);
-        const sid   = entry.id;
-        const already_owned = acc.unlocked_skins.includes(sid) || newly_unlocked.includes(sid);
-        if (already_owned) {
-            refund_total += RARITY_REFUND[entry.rarity] ?? 2;
-        } else {
-            acc.unlocked_skins.push(sid);
-            newly_unlocked.push(sid);
+    if (is_tool_roll) {
+        // Tool roll — adds to unlocked_tools
+        if (!acc.unlocked_tools) acc.unlocked_tools = [];
+        for (let i = 0; i < count; i++) {
+            const entry = weightedToolRoll();
+            const tid   = entry.id;
+            const already_owned = acc.unlocked_tools.includes(tid) || newly_unlocked.includes(tid);
+            if (already_owned) {
+                refund_total += RARITY_REFUND[entry.rarity] ?? 2;
+            } else {
+                acc.unlocked_tools.push(tid);
+                newly_unlocked.push(tid);
+            }
+            results.push(tid);
         }
-        results.push(sid);
+    } else {
+        // Skin roll — adds to unlocked_skins
+        if (!acc.unlocked_skins) acc.unlocked_skins = [];
+        for (let i = 0; i < count; i++) {
+            const entry = weightedRoll(pack_id);
+            const sid   = entry.id;
+            const already_owned = acc.unlocked_skins.includes(sid) || newly_unlocked.includes(sid);
+            if (already_owned) {
+                refund_total += RARITY_REFUND[entry.rarity] ?? 2;
+            } else {
+                acc.unlocked_skins.push(sid);
+                newly_unlocked.push(sid);
+            }
+            results.push(sid);
+        }
     }
 
     acc.sparks += refund_total;
@@ -486,7 +529,8 @@ function handleRollPack(ws, msg, player) {
         results,
         newly_unlocked,
         refund_total,
-        new_sparks: acc.sparks,
+        new_sparks:  acc.sparks,
+        result_type: is_tool_roll ? 'tool' : 'skin',
     });
 }
 

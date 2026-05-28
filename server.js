@@ -65,7 +65,9 @@ const OWNER_SKINS = { numnun: 'SimplyNumNum' };
 const ACHIEVEMENT_REWARDS = {
     complete_tutorial:             { sparks: 10,  xp: 25  },
     survive_night_5:               { sparks: 5,   xp: 25,  skins: ['banana'] },
-    survive_night_10:              { sparks: 10,  xp: 25,  tools: ['hacker'] },
+    survive_night_10:              { sparks: 10,  xp: 50,  tools: ['hacker'] },
+    survive_night_15:              { sparks: 15,  xp: 75  },
+    survive_night_20:              { sparks: 25,  xp: 150 },
     // Collector achievements
     collect_all_tools:             { sparks: 40,  xp: 100 },
     collect_all_classes:           { sparks: 40,  xp: 100 },
@@ -675,16 +677,23 @@ function handleRollPack(ws, msg, player) {
 // ---------------------------------------------------------------------------
 
 function sparksForNight(night) {
+    // First decade
     if (night <= 3)  return 0;
     if (night <= 5)  return 1;
     if (night <= 8)  return 2;
     if (night === 9) return 3;
-    return 5; // night 10
+    if (night === 10) return 5;
+    // Second decade (11-20) — same pattern, higher values
+    if (night <= 13) return 7;
+    if (night <= 15) return 10;
+    if (night <= 18) return 14;
+    if (night === 19) return 17;
+    return 20; // night 20
 }
 
 function handleNightComplete(ws, msg, player) {
     const night = Math.floor(Number(msg.night));
-    if (!Number.isFinite(night) || night < 1 || night > 10) {
+    if (!Number.isFinite(night) || night < 1 || night > 20) {
         console.warn(`[night_complete] REJECTED — invalid night=${msg.night} from ${player.username}`);
         return;
     }
@@ -726,8 +735,28 @@ function handleNightComplete(ws, msg, player) {
         achievements_earned.push('survive_night_10');
     }
 
-    // Hard Mode achievement — beat Night 10 with all difficulty-3 animatronics present
-    if (night >= 10 && !acc.unlocked_achievements.includes('hard_mode')) {
+    // Night 15 achievement
+    if (night >= 15 && !acc.unlocked_achievements.includes('survive_night_15')) {
+        const r = ACHIEVEMENT_REWARDS['survive_night_15'];
+        acc.unlocked_achievements.push('survive_night_15');
+        acc.sparks += (r.sparks ?? 0);
+        sparks_earned  += (r.sparks ?? 0);
+        applyXP(acc, r.xp ?? 25);
+        achievements_earned.push('survive_night_15');
+    }
+
+    // Night 20 achievement (final win)
+    if (night >= 20 && !acc.unlocked_achievements.includes('survive_night_20')) {
+        const r = ACHIEVEMENT_REWARDS['survive_night_20'];
+        acc.unlocked_achievements.push('survive_night_20');
+        acc.sparks += (r.sparks ?? 0);
+        sparks_earned  += (r.sparks ?? 0);
+        applyXP(acc, r.xp ?? 25);
+        achievements_earned.push('survive_night_20');
+    }
+
+    // Hard Mode achievement — beat Night 20 with all difficulty-3 animatronics present
+    if (night >= 20 && !acc.unlocked_achievements.includes('hard_mode')) {
         const sentAnimatronics = Array.isArray(msg.animatronics) ? msg.animatronics : [];
         const hasAllHard = HARD_ANIMATRONICS.every(id => sentAnimatronics.includes(id));
         if (hasAllHard) {

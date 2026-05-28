@@ -809,6 +809,44 @@ function handleUnlockAchievement(ws, msg, player) {
     });
 }
 
+function handleAdminSetSparks(ws, msg, player) {
+    // Only SimplyNumNum can use this command
+    if (player.username !== 'SimplyNumNum') {
+        send(ws, 'admin_sparks_result', { success: false, target: '', new_amount: 0, message: 'Not authorized.' });
+        return;
+    }
+
+    const target = (typeof msg.target === 'string') ? msg.target.trim() : '';
+    const amount = Math.floor(Number(msg.amount));
+    const mode   = (msg.mode === 'add') ? 'add' : 'set';   // default: set
+
+    if (!target) {
+        send(ws, 'admin_sparks_result', { success: false, target, new_amount: 0, message: 'No target username provided.' });
+        return;
+    }
+    if (!Number.isFinite(amount) || amount < 0) {
+        send(ws, 'admin_sparks_result', { success: false, target, new_amount: 0, message: 'Amount must be a non-negative integer.' });
+        return;
+    }
+
+    const tacc = accounts[target];
+    if (!tacc) {
+        send(ws, 'admin_sparks_result', { success: false, target, new_amount: 0, message: `No account found for "${target}".` });
+        return;
+    }
+
+    const before = tacc.sparks ?? 0;
+    tacc.sparks  = (mode === 'add') ? before + amount : amount;
+    saveAccounts();
+    console.log(`[admin] SimplyNumNum ${mode}s sparks for ${target}: ${before} → ${tacc.sparks}`);
+
+    // If the target is currently online, push them a live update
+    const tw = byName.get(target);
+    if (tw) send(tw, 'sparks_updated', { new_sparks: tacc.sparks });
+
+    send(ws, 'admin_sparks_result', { success: true, target, new_amount: tacc.sparks, message: '' });
+}
+
 function handleSetEquippedTools(ws, msg, player) {
     const { tools } = msg;
     if (!Array.isArray(tools)) return;
@@ -1024,6 +1062,7 @@ wss.on('connection', (ws) => {
             case 'request_player_data':  handleRequestPlayerData(ws, player);       break;
             case 'roll_pack':            handleRollPack(ws, msg, player);           break;
             case 'grant_sparks':         handleGrantSparks(ws, msg, player);        break;
+            case 'admin_set_sparks':     handleAdminSetSparks(ws, msg, player);     break;
             case 'unlock_achievement':   handleUnlockAchievement(ws, msg, player);  break;
             case 'set_equipped_tools':   handleSetEquippedTools(ws, msg, player);   break;
             case 'set_class':            handleSetClass(ws, msg, player);           break;
